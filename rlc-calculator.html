@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RLC Zielwert-Finder (Top-10, Praxisgerechte Gesamttoleranz)</title>
+  <style>
+    :root{font-family:Inter, Roboto, Arial; --card:#f7f7fb; --accent:#0b6efd}
+    body{margin:0;background:#eef2ff;color:#0b1220;padding:20px}
+    .container{max-width:820px;margin:0 auto}
+    h1{font-size:20px;margin:6px 0 16px}
+    .card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 6px 20px rgba(11,14,24,0.06)}
+    label{display:block;font-size:13px;margin-bottom:6px}
+    input, select{width:100%;padding:8px;border-radius:8px;border:1px solid #d6d9ee;font-size:14px}
+    .btn{background:var(--accent);color:#fff;padding:10px 14px;border-radius:10px;border:0;cursor:pointer;margin-top:10px;width:100%}
+    table{border-collapse:collapse;width:100%;margin-top:10px}
+    th, td{border:1px solid #ccc;padding:6px;text-align:center}
+    th{background:#e0e0f0}
+    .note{font-size:13px;color:#3a4a63;margin-top:8px}
+  </style>
+  <!-- Chart.js früh laden, so dass es beim Klick sicher verfügbar ist -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>Zielwert-Finder für 2 R/L/C-Bauteile (Top-10, Praxisgerechte Gesamttoleranz)</h1>
+
+    <div class="card">
+      <label>Zielwert</label>
+      <input type="number" id="target" placeholder="z. B. 1500" value="150" />
+
+      <label>Bauteilart</label>
+      <select id="type">
+        <option value="R">Widerstand (R)</option>
+        <option value="L">Induktivität (L)</option>
+        <option value="C">Kapazität (C)</option>
+      </select>
+
+      <label>Reihe</label>
+      <select id="series">
+        <option value="E12">E12</option>
+        <option value="E24">E24</option>
+        <option value="E48">E48</option>
+      </select>
+
+      <label>Schaltung</label>
+      <select id="mode">
+        <option value="series">Serie</option>
+        <option value="parallel">Parallel</option>
+      </select>
+
+      <label>Toleranz (%)</label>
+      <select id="tolerance">
+        <option value="1">±1%</option>
+        <option value="2">±2%</option>
+        <option value="3">±3%</option>
+        <option value="5">±5%</option>
+        <option value="10">±10%</option>
+      </select>
+
+      <button class="btn" id="calc">Berechnen</button>
+    
+    </div>
+
+    <div class="card">
+      <h3>Top-10 Ergebnisse</h3>
+      <div id="result"></div>
+      <canvas id="chart1" style="margin-top:20px; width:100%; height:300px"></canvas>
+    </div>
+  </div>
+
+  <script>
+    // --- E-Reihen
+    const E12 = [0.0,1.0,1.2,1.5,1.8,2.2,2.7,3.3,3.9,4.7,5.6,6.8,8.2];
+    const E24 = [0.0,1.0,1.1,1.2,1.3,1.5,1.6,1.8,2.0,2.2,2.4,2.7,3.0,3.3,3.6,3.9,4.3,4.7,5.1,5.6,6.2,6.8,7.5,8.2,9.1];
+    const E48 = [0.0,1.00,1.05,1.10,1.15,1.21,1.27,1.33,1.40,1.47,1.54,1.62,1.69,1.78,1.87,1.96,2.05,2.15,2.26,2.37,2.49,2.61,2.74,2.87,3.01,3.16,3.32,3.48,3.65,3.83,4.02,4.22,4.42,4.64,4.87,5.11,5.36,5.62,5.90,6.19,6.49,6.81,7.15,7.50,7.87,8.25,8.66,9.09,9.53];
+
+    function expand(base){
+      const arr=[];
+      for(let decade=-3; decade<=6; decade++){
+        for(const x of base) arr.push(x*Math.pow(10,decade));
+      }
+      return arr;
+    }
+
+    function combine(a,b,mode,type){
+      if(type==="R" || type==="L"){
+        return mode==="series" ? a+b : 1/(1/a+1/b);
+      }
+      if(type==="C"){
+        return mode==="series" ? 1/(1/a+1/b) : a+b;
+      }
+    }
+
+    // Statistische Toleranz gemäß Bosch-Referenz: sqrt(sum((∂f/∂xi * Ti)^2))
+    function calcStatTol(a,b,type,mode,tol){
+      const Ta = a * tol;
+      const Tb = b * tol;
+
+      if(type==="R" || type==="L"){
+        if(mode==="series"){
+          return Math.sqrt(Ta*Ta + Tb*Tb) / (a+b);
+        } else {
+          const f = 1/(1/a+1/b);
+          const dfa = (b*b)/((a+b)*(a+b));
+          const dfb = (a*a)/((a+b)*(a+b));
+          const df = Math.sqrt((dfa*Ta)**2 + (dfb*Tb)**2);
+          return df / f;
+        }
+      }
+
+      if(type==="C"){
+        if(mode==="parallel"){
+          return Math.sqrt(Ta*Ta + Tb*Tb)/(a+b);
+        } else {
+          // Korrekte Berechnung für C-Serie
+          const f = 1/(1/a + 1/b);
+          const dfa = (b*b)/((a+b)*(a+b));
+          const dfb = (a*a)/((a+b)*(a+b));
+          const df = Math.sqrt((dfa*Ta)**2 + (dfb*Tb)**2);
+          return df / f;
+        }
+      }
+    }
+
+    // Hilfsfunktion: sichere Zerstörung eines existierenden Charts
+    function safeDestroyChart(){
+      try{
+        if(window.chart1 && typeof window.chart1.destroy === 'function'){
+          window.chart1.destroy();
+        }
+      }catch(e){
+        console.warn('Fehler beim Zerstören des Charts:', e);
+      }
+    }
+
+    document.getElementById('calc').onclick = ()=>{
+      const target = Number(document.getElementById('target').value);
+      const type   = document.getElementById('type').value;
+      const mode   = document.getElementById('mode').value;
+      const serie  = document.getElementById('series').value;
+      const tol    = Number(document.getElementById('tolerance').value)/100;
+
+      const base = serie==="E12"?E12:serie==="E24"?E24:E48;
+      const values = expand(base);
+
+      let results=[];
+      for(const a of values){
+        for(const b of values){
+          if(a > b) continue;
+          let val = combine(a,b,mode,type);
+          let abw = Math.abs(val-target);
+          let totalTol = calcStatTol(a,b,type,mode,tol);
+          results.push({a,b,val,abw,totalTol});
+        }
+      }
+
+      results.sort((x,y)=>{
+        if(Math.abs(x.abw - y.abw) > 1e-12) return x.abw - y.abw;
+        return x.totalTol - y.totalTol;
+      });
+
+      const top10 = results.slice(0,10);
+
+      let out = '<table><tr><th>#</th><th>Bauteil 1</th><th>Bauteil 2</th><th>Wert</th><th>Abweichung (%)</th><th>Gesamttoleranz (%)</th></tr>';
+      top10.forEach((r,i)=>{
+        out += `<tr><td>${i+1}</td><td>${Math.round(r.a * 100) / 100}</td><td>${Math.round(r.b * 100) / 100}</td><td>${r.val.toFixed(3)}</td><td>${(r.abw/target*100).toFixed(3)}</td><td>${(r.totalTol*100).toFixed(3)}</td></tr>`;
+      });
+      out += '</table>';
+
+      document.getElementById('result').innerHTML = out;
+
+      // Diagramm 1: gestapelte Darstellung Abweichung + Toleranz
+      const ctx = document.getElementById('chart1').getContext('2d');
+      const labels = top10.map((r,i)=>"#"+(i+1));
+      const abwData = top10.map(r=>Number((r.abw/target*100).toFixed(4)));
+      const tolData = top10.map(r=>Number((r.totalTol*100).toFixed(2)));
+
+      safeDestroyChart();
+
+      try{
+        window.chart1 = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: labels,
+            datasets: [
+              {
+                label: 'Abweichung (%)',
+                data: abwData,
+                backgroundColor: 'rgba(11,110,253,0.7)'
+              },
+              {
+                label: 'Gesamttoleranz (%)',
+                data: tolData,
+                backgroundColor: 'rgba(0,200,0,0.5)'
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { position: 'top' } },
+            scales: {
+              x: { stacked: true },
+              y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Prozent (%)' } }
+            }
+          }
+        });
+      }catch(e){
+        console.error('Chart konnte nicht erstellt werden:', e);
+      }
+    }
+
+  </script>
+</body>
+</html>
